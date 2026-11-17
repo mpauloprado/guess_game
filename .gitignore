@@ -12,3 +12,6 @@ db/*
 bin/
 *.lock
 
+
+# Configuração local do Docker Compose (pode conter senhas)
+.env

@@ -1,0 +1,81 @@
+# =============================================================================
+# Jogo de Adivinhação — NGINX (frontend + proxy/balanceador) + N backends Flask
+# + PostgreSQL com volume persistente.
+#
+#   docker compose up -d --build      sobe tudo
+#   http://localhost                  jogo (porta configurável em HTTP_PORT)
+#
+# Versões e réplicas vêm de variáveis (arquivo .env, ver .env.example).
+# Atualizar um componente = trocar a variável de versão e rodar "up -d" de novo.
+# =============================================================================
+name: guess-game
+
+x-restart: &restart
+  restart: unless-stopped   # reinicia automaticamente se o container cair
+
+services:
+
+  # ---------------------------------------------------------------------------
+  db:
+    <<: *restart
+    image: postgres:${POSTGRES_VERSION:-16.6-alpine}
+    environment:
+      POSTGRES_USER: ${DB_USER:-guess}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-guess-lab-pass}
+      POSTGRES_DB: ${DB_NAME:-guess}
+    volumes:
+      - db-data:/var/lib/postgresql/data                       # dados persistentes
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [app]
+
+  # ---------------------------------------------------------------------------
+  backend:
+    <<: *restart
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-}guess-game-backend:${BACKEND_VERSION:-1.0.0}
+    environment:
+      FLASK_APP: run.py
+      FLASK_DB_TYPE: postgres
+      FLASK_DB_HOST: db
+      FLASK_DB_PORT: "5432"
+      FLASK_DB_USER: ${DB_USER:-guess}
+      FLASK_DB_PASSWORD: ${DB_PASSWORD:-guess-lab-pass}
+      FLASK_DB_NAME: ${DB_NAME:-guess}
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-3}     # várias instâncias atrás do NGINX
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [app]
+    # healthcheck definido no Dockerfile (GET /health)
+
+  # ---------------------------------------------------------------------------
+  nginx:
+    <<: *restart
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: /api
+    image: ${REGISTRY:-}guess-game-frontend:${FRONTEND_VERSION:-1.0.0}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [web, app]
+
+volumes:
+  db-data:
+
+networks:
+  web:          # exposta ao host (só o NGINX publica porta)
+  app:          # interna: backend e banco sem acesso externo
+    internal: true
